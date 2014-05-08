@@ -30,12 +30,15 @@ import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.HashMap;
-import java.util.Hashtable;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Properties;
+import java.util.Set;
+import java.util.TreeMap;
 
 import javax.naming.Context;
 import javax.naming.NamingEnumeration;
@@ -57,7 +60,6 @@ import org.nhindirect.stagent.cert.CacheableCertStore;
 import org.nhindirect.stagent.cert.CertCacheFactory;
 import org.nhindirect.stagent.cert.CertStoreCachePolicy;
 import org.nhindirect.stagent.cert.CertificateStore;
-import org.nhindirect.stagent.cert.DefaultCertStoreCachePolicy;
 import org.nhindirect.stagent.cert.impl.annotation.DNSCertStoreBootstrap;
 import org.nhindirect.stagent.cert.impl.annotation.DNSCertStoreCachePolicy;
 import org.nhindirect.stagent.cert.impl.annotation.DNSCertStoreServers;
@@ -74,7 +76,6 @@ import org.xbill.DNS.Name;
 import org.xbill.DNS.Record;
 import org.xbill.DNS.ResolverConfig;
 import org.xbill.DNS.SRVRecord;
-import org.xbill.DNS.TextParseException;
 import org.xbill.DNS.Type;
 
 import com.google.inject.Inject;
@@ -699,7 +700,43 @@ public class DNSCertificateStore extends CertificateStore implements CacheableCe
 		return retVal;
 	}	
 
-
+	
+	/**
+	 * Private class that is used to compare DNS SRV records.
+	 * We need to sort them based upon "priority" and then by "weight".
+	 */
+	private class SrvRecordCompatator implements Comparator<SRVRecord> {
+		@Override
+		public int compare(SRVRecord o1, SRVRecord o2) {
+			if ((o1 == null) && (o2 == null)) {
+				return 0;				
+			} else if ((o1 != null) && (o2 == null)) {
+				return 1;
+			} else if ((o1 == null) && (o2 != null)) {
+				return -1;
+			} else if (o1 == o2) {
+				return 0;
+			} else {
+				// Sort by "priority" first (lowest "value" is highest priority)
+				if (o1.getPriority() < o2.getPriority()) {
+					return -1;
+				} else if (o1.getPriority() > o2.getPriority()) {
+					return 1;
+				} else {
+					// Sort by "weight" if the priorities are the same
+					if (o1.getWeight() < o2.getWeight()) {
+						return -1;
+					} else if (o1.getWeight() > o2.getWeight()) {
+						return 1;
+					} else {
+						return 0;
+					}
+				}
+			}
+		}
+	}	
+	
+	
 	/**
 	 * Get the DNS SRV records for the passed in "domain" name.
 	 * 
@@ -710,6 +747,7 @@ public class DNSCertificateStore extends CertificateStore implements CacheableCe
 	 */
 	private List<SRVRecord> getDnsSrvRecords(String domainName) {
 		List<SRVRecord> srvRecords = new ArrayList<SRVRecord>();
+		List<SRVRecord> sortedSrvRecords = new ArrayList<SRVRecord>();
 		
 		if (domainName == null) {
 			return srvRecords;
@@ -724,37 +762,16 @@ public class DNSCertificateStore extends CertificateStore implements CacheableCe
 			Record[] records = new Lookup(query, Type.SRV).run();
 
 			if ((records != null) && (records.length > 0)) {
-				LOGGER.debug("\nFOUND SRV records!!  count: " + records.length + "\n");
+				LOGGER.debug("\nFOUND SRV records -  count: " + records.length + "\n");
 										
 				StringBuilder buf = new StringBuilder();
 				for (Record record : records) {
-					SRVRecord srv = (SRVRecord) record;
-
-					srvRecords.add(srv);
-
-					buf.append("\n*** SRV Record *** \n");
-					buf.append("\tName: " + srv.getName() + "\n");
-					buf.append("\tPort: " + srv.getPort() + "\n");
-					buf.append("\tPriority: " + srv.getPriority() + "\n");
-					buf.append("\tType: " + srv.getType() + "\n");
-					buf.append("\tRRsetType: " + srv.getRRsetType() + "\n");
-					buf.append("\tTTL: " + srv.getTTL() + "\n");
-					buf.append("\tDClass: " + srv.getDClass() + "\n");
-					buf.append("\tWeight: " + srv.getWeight() + "\n");
-
-					if (srv.getTarget() != null) {
-						buf.append("\tTarget: " + srv.getTarget() + "\n");
-					} else {
-						buf.append("\tTarget: NULL \n");
-					}
-
-					if (srv.getAdditionalName() != null) {
-						buf.append("\tAdditionalName: "
-								+ srv.getAdditionalName() + "\n");
-					} else {
-						buf.append("\tAdditionalName: NULL \n");
-					}
+					srvRecords.add((SRVRecord) record);
 				}
+				
+				sortedSrvRecords = sortSrvRecords(srvRecords);
+				
+				logDebugSrvRecords(sortedSrvRecords);
 				
 				LOGGER.debug(buf.toString());
 			} else {
@@ -765,9 +782,84 @@ public class DNSCertificateStore extends CertificateStore implements CacheableCe
 			e.printStackTrace();			
 		}
 				
-		return srvRecords;
+		return sortedSrvRecords;
 	}
 
+
+	/**
+	 * Log debug information about the passed in "SRVRecord" objects.
+	 * 
+	 * @param srvRecords
+	 * 		Contains the "SRVRecord" object for which to log debug information.
+	 */
+	private void logDebugSrvRecords(List<SRVRecord> srvRecords) {
+		StringBuilder buf = new StringBuilder();		
+		
+		if (srvRecords!= null && srvRecords.size() > 0) {
+			for (SRVRecord srvRecord : srvRecords) {
+				buf.append("\n*** SRV Record *** \n");
+				buf.append("\tName: " + srvRecord.getName() + "\n");
+				buf.append("\tPort: " + srvRecord.getPort() + "\n");
+				buf.append("\tPriority: " + srvRecord.getPriority() + "\n");
+				buf.append("\tWeight: " + srvRecord.getWeight() + "\n");
+				buf.append("\tType: " + srvRecord.getType() + "\n");
+				buf.append("\tRRsetType: " + srvRecord.getRRsetType() + "\n");
+				buf.append("\tTTL: " + srvRecord.getTTL() + "\n");
+				buf.append("\tDClass: " + srvRecord.getDClass() + "\n");
+
+				if (srvRecord.getTarget() != null) {
+					buf.append("\tTarget: " + srvRecord.getTarget() + "\n");
+				} else {
+					buf.append("\tTarget: NULL \n");
+				}
+
+				if (srvRecord.getAdditionalName() != null) {
+					buf.append("\tAdditionalName: " + srvRecord.getAdditionalName() + "\n");						
+				} else {
+					buf.append("\tAdditionalName: NULL \n");
+				}				
+			}
+		} else {
+			buf.append("\nSrvRecord list is NULL or EMPTY \n");
+		}				
+		
+		LOGGER.debug(buf.toString());		
+	}
+
+
+
+	/**
+	 * Sort the passed in "SRVRecord" objects. The sorting is based first on "priority" and then on "weight".
+	 * 
+	 * @param srvRecords
+	 * 		Contains the list of "SRVRecord" objects to sort.
+	 * @return
+	 * 		Returns a list of sorted "SRVRecord" objects.
+	 */
+	private List<SRVRecord> sortSrvRecords(List<SRVRecord> srvRecords) {
+		List<SRVRecord> sortedList = new ArrayList<SRVRecord>();
+		
+		if ((srvRecords != null) && (srvRecords.size() > 0)) {
+			SrvRecordCompatator srvRecordComparator = new SrvRecordCompatator();
+			TreeMap<SRVRecord, SRVRecord> treeMap = new TreeMap<SRVRecord, SRVRecord>(srvRecordComparator);
+					
+			for (SRVRecord srvRecord : srvRecords) {
+				// Have the treeMap "comparator" sort the records
+				treeMap.put(srvRecord, srvRecord);
+			}
+
+			Set<Entry<SRVRecord, SRVRecord>> set = treeMap.entrySet();
+			Iterator<Entry<SRVRecord, SRVRecord>> i = set.iterator();
+
+			while (i.hasNext()) {
+				Map.Entry mapEntry = (Map.Entry) i.next();
+				
+				sortedList.add((SRVRecord) mapEntry.getValue());
+			}
+		}
+		
+		return sortedList;
+	}
 
 
 	public void flush(boolean purgeBootStrap) 

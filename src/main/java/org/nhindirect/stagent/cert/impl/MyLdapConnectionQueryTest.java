@@ -7,8 +7,13 @@ import java.security.cert.Certificate;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
+import java.util.TreeMap;
 
 import javax.naming.Context;
 import javax.naming.NamingEnumeration;
@@ -186,10 +191,12 @@ public class MyLdapConnectionQueryTest extends TestCase {
 					}
 				}
 				
-				System.out.println(buf.toString());
+				System.out.println(buf.toString());				
+				
 			} else {
 				System.out.println("\nCould NOT find any SRV records for: '" + query + "'");
 			}
+		
 		} catch (Exception e) {
 			System.out.println("\nERROR occurred in searching for DNS SRV records. " + e.getMessage());
 			e.printStackTrace();			
@@ -200,10 +207,13 @@ public class MyLdapConnectionQueryTest extends TestCase {
 	
 	
 	
+
+
+
+
 	//-------------------------------------------------------------------------------------------------------------------
 	// Private
 	//-------------------------------------------------------------------------------------------------------------------	
-	
 	
 	/**
 	 * Convert a ldap byte array cert to a x509 certificate.
