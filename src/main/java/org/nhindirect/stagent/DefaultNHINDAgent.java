@@ -1304,6 +1304,8 @@ public class DefaultNHINDAgent implements NHINDAgent, MutableAgent
      */
     private Collection<X509Certificate> resolvePublicCerts(InternetAddress address, boolean required, boolean incoming) throws NHINDException
     {    	
+    	LOGGER.debug("\nBegin DefaultNHINDAgent.resolvePublicCerts - address: '" + address + "'\n");
+    	
     	Collection<X509Certificate> certs = null;
         try
         {
@@ -1348,7 +1350,9 @@ public class DefaultNHINDAgent implements NHINDAgent, MutableAgent
             	// for logging, tracking etc...
             	throw new NHINDException(ex);
             }                
-        }          
+        }   
+        
+        LOGGER.debug("\nEnd DefaultNHINDAgent.resolvePublicCerts - address: '" + address + "'\n");
         
         return certs;
     }

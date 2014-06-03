@@ -285,7 +285,7 @@ public class DNSCertificateStore extends CertificateStore implements CacheableCe
     @Override
     public Collection<X509Certificate> getCertificates(String subjectName)
     {
-    	LOGGER.debug("\nIn DNSCertificateStore.getCertificates for subjectName: '" + subjectName + "'\n");
+    	LOGGER.debug("\nBegin DNSCertificateStore.getCertificates for subjectName: '" + subjectName + "'\n");
     	
       	String realSubjectName;
     	int index;
@@ -327,56 +327,12 @@ public class DNSCertificateStore extends CertificateStore implements CacheableCe
     				LOGGER.info("getCertificates(String subjectName) - Could not find a DNS certificate for subject " + subjectName);
     		} 
     	}
-     	     	
-		// If we did not find a cert via DNS, try searching for it via LDAP
-		if ((retVal == null) || 
-				(retVal != null && retVal.size() == 0)) {
-					
-			LOGGER.debug("\nDid not find certs via DNS, try looking in LDAP...\n");
-			retVal = lookupLDAP(realSubjectName);
-			
-			//-----------------------------------------------------------------------------------------
-			// If you don't find any cert records the first time via LDAP, try searching with only the 
-			// "domain" part of the email.
-			//-----------------------------------------------------------------------------------------		
-			if ((retVal == null) || (retVal.size() == 0)) {
-				String domainName = getDomainNameFromEmail(realSubjectName);
-				
-				if (domainName.length() < realSubjectName.length()) {
-					retVal = lookupLDAP(domainName);
-				}
-			} 
-		}  	
+     	
+    	LOGGER.debug("\nEnd DNSCertificateStore.getCertificates for subjectName: '" + subjectName + "'\n");
     	
     	return retVal;
     }    
     
-    
-    
-	/**
-	 * Gets a "domain" name from the passed in "email" name.
-	 * 
-	 * @param emailName
-	 * 		Contains an email name from which to extract the "domain" name.
-	 * @return
-	 * 		Returns the domain part of the passed in email name.
-	 */
-	private String getDomainNameFromEmail(String emailName) {		
-		String domainName = "";
-		
-		if (emailName != null) {
-			int index = emailName.indexOf("@");
-			
-			if (index != -1) {
-				domainName = emailName.substring(index + 1);
-			} else {
-				domainName = emailName;
-			}			
-		}
-		
-		return domainName;
-	}
-
 
 	/**
 	 * {@inheritDoc}
@@ -384,6 +340,16 @@ public class DNSCertificateStore extends CertificateStore implements CacheableCe
     @Override
     public Collection<X509Certificate> getAllCertificates()
     {
+    	StringBuilder buf = new StringBuilder("\nIn DNSCertificateStore.getAllCertificates \n");
+
+    	if (localStoreDelegate != null) {
+			buf.append("\tlocalStoreDelegate is NOT null. Calling 'localStoreDelegate.getAllCertificates()'... \n");
+			
+		} else {
+			buf.append("\tlocalStoreDelegate is NULL \n");
+		}
+    	LOGGER.debug(buf.toString());
+    	
     	return (localStoreDelegate == null) ? null : localStoreDelegate.getAllCertificates(); 
     }    
     
@@ -422,6 +388,7 @@ public class DNSCertificateStore extends CertificateStore implements CacheableCe
 				retRecords = lu.run();	
 				if (retRecords != null && retRecords.length > 0)
 				{
+					LOGGER.debug("\nIn lookupDNS - Found CNAME records \n");
 					CNAMERecord cnameRect = (CNAMERecord)retRecords[0];
 					tempDomain = cnameRect.getTarget();
 				}
@@ -463,6 +430,9 @@ public class DNSCertificateStore extends CertificateStore implements CacheableCe
 			if (retRecords != null)
 			{
 				retVal = new ArrayList<X509Certificate>();
+				
+				logDebugDNSRecordInfo(retRecords);
+				
 				for (Record rec : retRecords)
 				{
 					if (rec instanceof CERTRecord) 
@@ -473,14 +443,16 @@ public class DNSCertificateStore extends CertificateStore implements CacheableCe
 							case CERTRecord.PKIX:
 							{
 								Certificate certToAdd = convertPXIXRecordToCert(certRec);//CERTConverter.parseRecord((CERTRecord)rec);
-								if (certToAdd != null && certToAdd instanceof X509Certificate) {// may not be an X509Cert
-									LOGGER.debug("\nIn lookupDNS - FOUND cert record and converted from PKIX to CERT \n");
+								if (certToAdd != null && certToAdd instanceof X509Certificate) {// may not be an X509Cert									
 									retVal.add((X509Certificate)certToAdd);
+									
+									LOGGER.debug("\nIn lookupDNS - FOUND cert record and converted from PKIX to CERT, adding to return list \n");
 								}
 								break;
 							}
 							case CERTRecord.URI:
 							{
+								LOGGER.warn("Unimplemented case for CERT type " + certRec.getCertType() + " encountered for lookup name" + lookupName);
 								//TODO: Implement
 							}
 							default:
@@ -491,8 +463,6 @@ public class DNSCertificateStore extends CertificateStore implements CacheableCe
 					}
 				}			
 			}
-			else if (domain.length() < name.length())  // if this is an email address, do the search again and the host level
-				retVal = lookupDNS(domain);			
 		}
 		catch (Exception e)
 		{
@@ -504,6 +474,8 @@ public class DNSCertificateStore extends CertificateStore implements CacheableCe
 		// add or update the local cert store
 		if (retVal != null && retVal.size() > 0 && localStoreDelegate != null)
 		{
+			LOGGER.debug("\nIn lookupDNS - Updating the local cert store (localStoreDelegate) \n");
+			
 			for (X509Certificate cert : retVal)
 			{
 
@@ -527,340 +499,86 @@ public class DNSCertificateStore extends CertificateStore implements CacheableCe
 				 */
 			}
 		}
-		return retVal;
-	}
-
-
-
-	/**
-	 * Search for a public certificate for the passed in email address via LDAP.
-	 * Note: LDAP public certs can be "address bound" or "domain bound". You need to try
-	 * 		 both.
-	 * 
-	 * @param directName
-	 * 		Contains the Direct "name" (email address or just domain part of email) for which to lookup a public certificate via LDAP.
-	 * @return
-	 * 		Returns the public x509 certificates that were discovered.
-	 */
-	private Collection<X509Certificate> lookupLDAP(String directName) {		
-		Collection<X509Certificate> resultLdapCerts = new ArrayList<X509Certificate>();
 		
-		LOGGER.debug("\nBegin lookupLDAP - directName: '" + directName + "' \n");
-		
-		if (directName == null) {
-			return resultLdapCerts;
-		}
-		
-		String domainName = directName;
-		int addressAtSignIndex = directName.indexOf("@");
-		
-		if (addressAtSignIndex != -1) {
-			domainName = directName.substring(addressAtSignIndex + 1);
-		}
-				
-		// Get the DNS SRV records for this Direct address domain. The SRV records will contain connection
-		// information to the LDAP server.
-		List<SRVRecord> srvRecords = getDnsSrvRecords(domainName);		
-		
-		if ((srvRecords != null) && (srvRecords.size() > 0)) {					
-			for (SRVRecord srvRecord : srvRecords) {
-				InitialDirContext context = null;
-				
-				try {					
-					context = connectToLDAP(srvRecord);
-					
-					// Create the search controls
-					SearchControls searchCtls = new SearchControls();
-					searchCtls.setSearchScope(SearchControls.SUBTREE_SCOPE);					
-					
-					NamingEnumeration results = null;
-					
-					// Search LDAP for certificates
-					results = context.search("", "(objectclass=inetOrgPerson)", searchCtls);
-					
-					if ((results != null) && (results.hasMore())) {
-						LOGGER.debug("\nFOUND items from LDAP search, looping to find matching email. \n");
-						
-						while (results.hasMore()) {
-				            SearchResult resultItem = (SearchResult) results.next(); 				            
-				            Attributes attrs = resultItem.getAttributes();
-
-				            if ((attrs.get("mail") != null) &&
-				            		(attrs.get("mail").get() != null)) {
-				            	
-								String ldapMailAttrValue = (String) attrs.get("mail").get();				
-								LOGGER.debug("\nComparing the ldap mail value: '" + ldapMailAttrValue + "' to target email: '" + directName + "'");
-								
-				            	if (directName.equalsIgnoreCase(ldapMailAttrValue)) {
-				            		LOGGER.debug("\nMATCH FOUND for ldap email attribute. Getting value from the ldap attribute 'userCertificate'");
-									
-						           	byte[] certBytes = (byte[]) attrs.get("userCertificate").get();            						            	
-					            	X509Certificate x509Cert = (X509Certificate) convertLdapCertToX509Cert(certBytes);
-					            	
-					            	resultLdapCerts.add(x509Cert);									
-								}       	             	
-							}
-						}									
-					} else {
-						LOGGER.debug("\nDid NOT find any items from LDAP search \n");						
-					}				
-				} catch (Exception e) {
-					LOGGER.error("\nError occurred in getting cert from LDAP. " + e.getMessage());
-					e.printStackTrace();					
-				} finally {
-					if (context != null) {
-						try {
-							context.close();
-						} catch (NamingException e) {
-							// no-op
-						}
-					}
-				}				
-			}	// for loop
-		}// if srv records exist
-		
-		LOGGER.debug("\nEnd lookupLDAP - directName: '" + directName + "' Number records found: " + resultLdapCerts.size() + "\n");
-		
-		return resultLdapCerts;
-	}
-
-	/**
-	 * Connect to LDAP as defined in the passed DNS SRV record.
-	 * 
-	 * @param srvRecord
-	 * 		Contains the DNS SRV record for which to connect to LDAP.
-	 * @return
-	 * @throws NamingException 
-	 */
-	private InitialDirContext connectToLDAP(SRVRecord srvRecord) throws NamingException {
-		InitialDirContext context = null;
-		
-		if (srvRecord != null) {			
-			String ldapTarget = srvRecord.getTarget().toString();
-			String ldapPort = new Integer(srvRecord.getPort()).toString();
-			
-			if (ldapTarget.endsWith(".")) {
-				ldapTarget = ldapTarget.substring(0, ldapTarget.length() - 1);
-			}	
-			
-			String ldapProviderUrl = "ldap://" + ldapTarget + ":" + ldapPort;	
-			
-			LOGGER.debug("\nTrying to connect to LDAP for url: " + ldapProviderUrl + "\n");
-			
-			// set properties for our connection and provider
-			Properties properties = new Properties();
-			properties.put(Context.INITIAL_CONTEXT_FACTORY, "com.sun.jndi.ldap.LdapCtxFactory");			  
-			properties.put(Context.PROVIDER_URL, ldapProviderUrl);
-			properties.put("com.sun.jndi.ldap.read.timeout", "7000");
-			
-			// set properties for anonymus authentication
-			properties.put(Context.SECURITY_AUTHENTICATION, "none");
-			
-			context = new InitialDirContext(properties);	
-			
-			LOGGER.debug("\nSuccessfully connected to ldap server \n");					
-		} 
-
-		return context;
-	}
-
-
-
-	/**
-	 * Convert a ldap byte array cert to a x509 certificate.
-	 * 
-	 * @param ldapCertBytes
-	 * 		Contains the certificate byte array we got out of ldap.
-	 * @return
-	 * 		Returns a X509Certificate object.
-	 */
-	private X509Certificate convertLdapCertToX509Cert(byte[] ldapCertBytes)
-	{
-		X509Certificate retVal = null;
-		ByteArrayInputStream inputStream = null;
-
-		try
-		{
-			final CertificateFactory cf = CertificateFactory.getInstance("X.509");
-			inputStream = new ByteArrayInputStream(ldapCertBytes);
-			retVal = (X509Certificate)cf.generateCertificate(inputStream);
-			
-			LOGGER.debug("\nSuccessfully converted ldap cert bytes to x509 cert \n");
-		}
-		catch (Exception e)
-		{
-			LOGGER.error("\nERROR: Failed to convert ldap certificate bytes to x509." + e.getMessage());
-			e.printStackTrace();
-		}
-		finally
-		{
-			IOUtils.closeQuietly(inputStream);
-		}
+		logX509CertData(retVal, "\nEnd DNSCertificateStore.lookupDNS - Returned cert collection \n");
 		
 		return retVal;
-	}	
-
-	
-	/**
-	 * Private class that is used to compare DNS SRV records.
-	 * We need to sort them based upon "priority" and then by "weight".
-	 */
-	private class SrvRecordCompatator implements Comparator<SRVRecord> {
-		@Override
-		public int compare(SRVRecord o1, SRVRecord o2) {
-			if ((o1 == null) && (o2 == null)) {
-				return 0;				
-			} else if ((o1 != null) && (o2 == null)) {
-				return 1;
-			} else if ((o1 == null) && (o2 != null)) {
-				return -1;
-			} else if (o1 == o2) {
-				return 0;
-			} else {
-				// Sort by "priority" first (lowest "value" is highest priority)
-				if (o1.getPriority() < o2.getPriority()) {
-					return -1;
-				} else if (o1.getPriority() > o2.getPriority()) {
-					return 1;
-				} else {
-					// Sort by "weight" if the priorities are the same
-					if (o1.getWeight() < o2.getWeight()) {
-						return -1;
-					} else if (o1.getWeight() > o2.getWeight()) {
-						return 1;
-					} else {
-						return 0;
-					}
-				}
-			}
-		}
-	}	
-	
-	
-	/**
-	 * Get the DNS SRV records for the passed in "domain" name.
-	 * 
-	 * @param domainName
-	 * 		Contains the "email" domain name for which to retrieve DNS SRV records.
-	 * @return
-	 * 		Returns a list of "SRVRecord" objects.
-	 */
-	private List<SRVRecord> getDnsSrvRecords(String domainName) {
-		List<SRVRecord> srvRecords = new ArrayList<SRVRecord>();
-		List<SRVRecord> sortedSrvRecords = new ArrayList<SRVRecord>();
-		
-		if (domainName == null) {
-			return srvRecords;
-		}		
-		
-		String query = "_ldap._tcp." + domainName;
-
-		LOGGER.debug("\nLooking for DNS SRV records for domain: '"
-				+ domainName + "' using query: '" + query + "'\n");
-
-		try {
-			Record[] records = new Lookup(query, Type.SRV).run();
-
-			if ((records != null) && (records.length > 0)) {
-				LOGGER.debug("\nFOUND SRV records -  count: " + records.length + "\n");
-										
-				StringBuilder buf = new StringBuilder();
-				for (Record record : records) {
-					srvRecords.add((SRVRecord) record);
-				}
-				
-				sortedSrvRecords = sortSrvRecords(srvRecords);
-				
-				logDebugSrvRecords(sortedSrvRecords);
-				
-				LOGGER.debug(buf.toString());
-			} else {
-				LOGGER.debug("\nCould NOT find any SRV records for domain: '" + domainName + "' \n");
-			}
-		} catch (Exception e) {
-			LOGGER.debug("\nError occurred in searching for DNS SRV records. " + e.getMessage());
-			e.printStackTrace();			
-		}
-				
-		return sortedSrvRecords;
 	}
-
-
+	
+	
 	/**
-	 * Log debug information about the passed in "SRVRecord" objects.
+	 * Log debug information about the passed in X509 cert data.
 	 * 
-	 * @param srvRecords
-	 * 		Contains the "SRVRecord" object for which to log debug information.
+	 * @param certs
+	 * 		Contains the collection of cert data to log.
+	 * @param titleText
+	 * 		Contains the title text to log.
 	 */
-	private void logDebugSrvRecords(List<SRVRecord> srvRecords) {
-		StringBuilder buf = new StringBuilder();		
+	@SuppressWarnings("rawtypes")
+	private void logX509CertData(Collection<X509Certificate> certs, String titleText) {
+		StringBuilder buf = new StringBuilder(titleText); 
 		
-		if (srvRecords!= null && srvRecords.size() > 0) {
-			for (SRVRecord srvRecord : srvRecords) {
-				buf.append("\n*** SRV Record *** \n");
-				buf.append("\tName: " + srvRecord.getName() + "\n");
-				buf.append("\tPort: " + srvRecord.getPort() + "\n");
-				buf.append("\tPriority: " + srvRecord.getPriority() + "\n");
-				buf.append("\tWeight: " + srvRecord.getWeight() + "\n");
-				buf.append("\tType: " + srvRecord.getType() + "\n");
-				buf.append("\tRRsetType: " + srvRecord.getRRsetType() + "\n");
-				buf.append("\tTTL: " + srvRecord.getTTL() + "\n");
-				buf.append("\tDClass: " + srvRecord.getDClass() + "\n");
-
-				if (srvRecord.getTarget() != null) {
-					buf.append("\tTarget: " + srvRecord.getTarget() + "\n");
+		if ((certs != null) && (certs.size() > 0)) {
+			for (Iterator iterator = certs.iterator(); iterator.hasNext();) {			
+				X509Certificate x509Cert = (X509Certificate) iterator.next();
+					
+				buf.append("\tCert \n");
+				buf.append("\t\tType: " + x509Cert.getType() + "\n");
+				
+				if (x509Cert.getSubjectDN() != null) {
+					buf.append("\t\tSubjectDN: " + x509Cert.getSubjectDN().getName() + "\n");
 				} else {
-					buf.append("\tTarget: NULL \n");
+					buf.append("\t\tSubjectDN: NULL \n");
 				}
-
-				if (srvRecord.getAdditionalName() != null) {
-					buf.append("\tAdditionalName: " + srvRecord.getAdditionalName() + "\n");						
+				
+				if (x509Cert.getIssuerDN() != null) {
+					buf.append("\t\tIssuerDN: " + x509Cert.getIssuerDN().getName() + "\n");
 				} else {
-					buf.append("\tAdditionalName: NULL \n");
-				}				
-			}
+					buf.append("\t\tIssuerDN: NULL \n");
+				}																			
+			}   			
 		} else {
-			buf.append("\nSrvRecord list is NULL or EMPTY \n");
-		}				
-		
-		LOGGER.debug(buf.toString());		
-	}
-
-
-
-	/**
-	 * Sort the passed in "SRVRecord" objects. The sorting is based first on "priority" and then on "weight".
-	 * 
-	 * @param srvRecords
-	 * 		Contains the list of "SRVRecord" objects to sort.
-	 * @return
-	 * 		Returns a list of sorted "SRVRecord" objects.
-	 */
-	private List<SRVRecord> sortSrvRecords(List<SRVRecord> srvRecords) {
-		List<SRVRecord> sortedList = new ArrayList<SRVRecord>();
-		
-		if ((srvRecords != null) && (srvRecords.size() > 0)) {
-			SrvRecordCompatator srvRecordComparator = new SrvRecordCompatator();
-			TreeMap<SRVRecord, SRVRecord> treeMap = new TreeMap<SRVRecord, SRVRecord>(srvRecordComparator);
-					
-			for (SRVRecord srvRecord : srvRecords) {
-				// Have the treeMap "comparator" sort the records
-				treeMap.put(srvRecord, srvRecord);
-			}
-
-			Set<Entry<SRVRecord, SRVRecord>> set = treeMap.entrySet();
-			Iterator<Entry<SRVRecord, SRVRecord>> i = set.iterator();
-
-			while (i.hasNext()) {
-				Map.Entry mapEntry = (Map.Entry) i.next();
-				
-				sortedList.add((SRVRecord) mapEntry.getValue());
-			}
+			buf.append("\tCert collection is NULL or emtpy \n");
 		}
 		
-		return sortedList;
-	}
+		LOGGER.debug(buf.toString());			
+	}	
 
+	/**
+	 * Log debug information about the passed in DNS records.
+	 * 
+	 * @param retRecords
+	 * 		Contains the array of "Record" objects for which to log debug information.
+	 */
+	private void logDebugDNSRecordInfo(Record[] retRecords) {		
+		// Log debug information about return records
+		StringBuilder buf = new StringBuilder("\nIn lookupDNS - Possible DNS Records found: \n");
+		
+		if (retRecords != null && retRecords.length > 0) {
+			buf.append("Total records: " + retRecords.length + "\n");
+			for (Record record : retRecords) {
+				if (record != null) {
+					buf.append("\tName: " + record.getName() + "\n");
+					buf.append("\tType: " + record.getType() + "\n");
+					buf.append("\tDClass: " + record.getDClass() + "\n");
+					buf.append("\tClassName: " + record.getClass().getName() + "\n");
+					if (record instanceof CERTRecord) {
+						buf.append("\tRecord is an instance of 'CERTRecord'\n");
+					} else {
+						buf.append("\tRecord IS NOT an instance of 'CERTRecord'\n");
+					}						
+				} else {
+					buf.append("\tRecord is NULL \n");
+				}
+				
+				buf.append("\n");
+			}			
+		} else {
+			buf.append("\tRecords array is NULL or empty \n");
+		}
+
+		LOGGER.debug(buf.toString());				
+	}
 
 	public void flush(boolean purgeBootStrap) 
 	{

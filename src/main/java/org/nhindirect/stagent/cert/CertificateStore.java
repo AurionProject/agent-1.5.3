@@ -26,6 +26,7 @@ import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.GregorianCalendar;
+import java.util.Iterator;
 
 import javax.mail.internet.InternetAddress;
 
@@ -33,6 +34,7 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.nhindirect.stagent.CryptoExtensions;
 import org.nhindirect.stagent.cert.impl.CRLRevocationManager;
+import org.nhindirect.stagent.cert.impl.DNSCertificateStore;
 
 /**
  * Abstract base class for a certificate store implementation.  It does not implement any specific certificate storage functions
@@ -66,6 +68,8 @@ public abstract class CertificateStore implements X509Store, CertificateResolver
 	 */    
     public Collection<X509Certificate> getCertificates(String subjectName)
     {
+		LOGGER.debug("\nBegin CertificateStore.getCertificates (String) - " + subjectName + " \n");
+		
         Collection<X509Certificate> retVal = new ArrayList<X509Certificate>();
 
         Collection<X509Certificate> certs = getAllCertificates();
@@ -174,11 +178,19 @@ public abstract class CertificateStore implements X509Store, CertificateResolver
 	 */	
 	public Collection<X509Certificate> getCertificates(InternetAddress address)
     {
+		if (address != null) {
+			LOGGER.debug("\nBegin CertificateStore.getCertificates (InternetAddress) - " + address.getAddress() + " \n");			
+		} else {
+			LOGGER.debug("\nBegin CertificateStore.getCertificates (InternetAddress) - NULL \n");
+		}
+		
         return getUsableCerts(address);
     }
 	
     protected Collection<X509Certificate> getUsableCerts(InternetAddress address)
     {
+    	LOGGER.debug("\nBegin CertificateStore.getUsableCerts - Address: '" + address + "' \n");
+    	
         if (address == null)
         {
             throw new IllegalArgumentException();
@@ -202,33 +214,87 @@ public abstract class CertificateStore implements X509Store, CertificateResolver
         	theAddress = theAddress.substring(0, startIndex) + theAddress.substring(endIndex);
         }
         
-        Collection<X509Certificate> certs = getCertificates("EMAILADDRESS=" + theAddress);
-
-        Collection<X509Certificate> filteredCerts = filterUsable(certs);
+        LOGGER.debug("\nIn CertificateStore.getUsableCerts - about to call 'getCertificates' with String param '" + 
+        		"EMAILADDRESS=" + theAddress + "'\n");
         
-        if (filteredCerts == null || filteredCerts.size() == 0)
+        // NOTE: This calls child class (DNSCertificateStore, KeyStoreCertificateStore etc.) "getCertificates" method
+        Collection<X509Certificate> certs = getCertificates("EMAILADDRESS=" + theAddress);
+        
+        if (certs == null || certs.size() == 0)
         {
-        	// find by host
-        	
+        	// find by host       	
         	if ((index = theAddress.indexOf("@")) > -1)
         	{
-        		theAddress = theAddress.substring(index + 1);
-        		certs = getCertificates("EMAILADDRESS=" + theAddress);
-        		filteredCerts = filterUsable(certs);
+        		String theDomain = theAddress.substring(index + 1);
+        		
+                LOGGER.debug("\nIn CertificateStore.getUsableCerts - Did NOT find any address bound certs, about to call 'getCertificates' with String param '" + 
+                		"EMAILADDRESS=" + theDomain + "'\n");
+                
+                // NOTE: This calls child class (DNSCertificateStore, KeyStoreCertificateStore etc.) "getCertificates" method
+        		certs = getCertificates("EMAILADDRESS=" + theDomain);
+        		
+        		if ((certs == null) || (certs.size() == 0)) {
+        			// We only want to search LDAP if we just finished a DNS search
+        			if (this instanceof DNSCertificateStore) {        				
+               			LOGGER.debug("\nIn CertificateStore.getUsableCerts - Could not find certs via DNS, trying LDAP \n"); 
+            			certs = lookupCertsViaLDAP(theAddress);
+					}
+				}
         	}
-        	else
-        		return filteredCerts;
-        }
+        } 
+        
+        LOGGER.debug("\nEnd CertificateStore.getUsableCerts - Address: '" + address + "' about to call 'filterUsable(certs)' \n");
 
         return filterUsable(certs);
     }
         
-    /*
+    /**
+     * Look up public certs via LDAP for the passed in Direct address.
+     * 
+     * @param theAddress
+     * 		Contains the direct address for which to lookup certs.
+     * @return
+     * 		Returns a collection of X509 certs.
+     */
+    private Collection<X509Certificate> lookupCertsViaLDAP(String theAddress) {
+    	Collection<X509Certificate> certs = new ArrayList<X509Certificate>();
+    	
+    	LOGGER.debug("\nBegin CertificateStore.lookupCertsViaLDAP ");
+    	
+    	if (theAddress != null && theAddress.length() > 0) {
+    		int indexAtSign = theAddress.indexOf("@");
+    	   	String theDomain = theAddress;
+
+    	   	if (indexAtSign > -1) {
+    	   		theDomain = theAddress.substring(indexAtSign + 1);
+			}
+    		
+    	   	LDAPCertificateLookup ldapCertLookup = new LDAPCertificateLookup();
+    	   	
+    	   	// First lookup certs in LDAP for the direct "address"
+    	   	certs = ldapCertLookup.lookupLDAP(theAddress);
+    	   	
+    	   	if ((certs == null) || (certs.size() == 0)) {
+    	   		if (indexAtSign != -1) {
+    	   			// Second lookup certs in LDAP for the direct "domain"
+    	   			certs = ldapCertLookup.lookupLDAP(theDomain);
+				}   	   		
+			}
+		}
+
+    	LOGGER.debug("\nEnd CertificateStore.lookupCertsViaLDAP ");
+    	
+		return certs;
+	}
+
+	/*
      * Removed certs that are not valid due to date expiration, CLR lists, or other revocation criteria
      */
     protected Collection<X509Certificate> filterUsable(Collection<X509Certificate> certs)
     {
     	Collection<X509Certificate> filteredCerts = new ArrayList<X509Certificate>();
+    	
+    	logX509CertData(certs, "\nBegin CertificateStore.filterUsable - Input cert data collection: \n");
     	
         for (X509Certificate cert : certs)
         {
@@ -252,8 +318,51 @@ public abstract class CertificateStore implements X509Store, CertificateResolver
             }
         }
         
+    	logX509CertData(filteredCerts, "\nEnd CertificateStore.filterUsable - Filtered cert data collection: \n");
+        
         return filteredCerts.size() == 0 ? null : filteredCerts;
     }
+
+	/**
+	 * Log debug information about the passed in X509 cert data.
+	 * 
+	 * @param certs
+	 * 		Contains the collection of cert data to log.
+	 * @param titleText
+	 * 		Contains the title text to log.
+	 */
+	@SuppressWarnings("rawtypes")
+	private void logX509CertData(Collection<X509Certificate> certs, String titleText) {
+		StringBuilder buf = new StringBuilder(titleText); 
+		
+		if ((certs != null) && (certs.size() > 0)) {
+			for (Iterator iterator = certs.iterator(); iterator.hasNext();) {			
+				X509Certificate x509Cert = (X509Certificate) iterator.next();
+					
+				buf.append("\tCert \n");
+				buf.append("\t\tType: " + x509Cert.getType() + "\n");
+				
+				if (x509Cert.getSubjectDN() != null) {
+					buf.append("\t\tSubjectDN: " + x509Cert.getSubjectDN().getName() + "\n");
+				} else {
+					buf.append("\t\tSubjectDN: NULL \n");
+				}
+				
+				if (x509Cert.getIssuerDN() != null) {
+					buf.append("\t\tIssuerDN: " + x509Cert.getIssuerDN().getName() + "\n");
+				} else {
+					buf.append("\t\tIssuerDN: NULL \n");
+				}																			
+			}   			
+		} else {
+			buf.append("\tCert collection is NULL or emtpy \n");
+		}
+		
+		LOGGER.debug(buf.toString());			
+	}
+    
+    
+    
     
 
 }
